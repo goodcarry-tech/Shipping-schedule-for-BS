@@ -614,10 +614,74 @@ def get_driver():
         return None
 
 
+def _js_click(driver, element):
+    """Click via JavaScript to bypass overlay/interception issues."""
+    driver.execute_script("arguments[0].scrollIntoView({block:'center'});", element)
+    time.sleep(0.3)
+    driver.execute_script("arguments[0].click();", element)
+
+
+def _dismiss_overlays(driver):
+    """Try to dismiss cookie banners and modal overlays."""
+    try:
+        from selenium.webdriver.common.by import By
+        dismiss_xpaths = [
+            "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'accept')]",
+            "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'agree')]",
+            "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'close')]",
+            "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'ok')]",
+            "//button[@aria-label='Close' or @aria-label='close']",
+            "//div[contains(@class,'modal')]//button",
+            "//div[contains(@class,'cookie')]//button",
+            "//div[contains(@class,'consent')]//button",
+            "//div[contains(@class,'banner')]//button[last()]",
+            "//div[contains(@class,'overlay')]//button",
+        ]
+        for xpath in dismiss_xpaths:
+            btns = driver.find_elements(By.XPATH, xpath)
+            for btn in btns:
+                try:
+                    if btn.is_displayed():
+                        _js_click(driver, btn)
+                        time.sleep(0.4)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+
+def _select_flexible(select_el, target: str) -> bool:
+    """Try multiple strategies to select an option matching target text."""
+    from selenium.webdriver.support.ui import Select
+    sel = Select(select_el)
+    t = target.strip().upper()
+    for opt in sel.options:
+        txt = opt.text.strip().upper()
+        val = (opt.get_attribute("value") or "").upper()
+        if txt == t or t in txt or (val and (t in val or val in t)):
+            try:
+                sel.select_by_visible_text(opt.text)
+                return True
+            except Exception:
+                try:
+                    sel.select_by_value(opt.get_attribute("value"))
+                    return True
+                except Exception:
+                    pass
+    return False
+
+
+# ─────────────────────────────────────────────
+# IAL Scraper
+# ─────────────────────────────────────────────
+
 def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
     """
     Scrape IAL schedule from https://www.interasia.cc/Service/Form?servicetype=3
-    POL: HAIPHONG -> PODs: HONG KONG, SHEKOU, KAOHSIUNG, TAICHUNG
+    Form: 4 <select> in order: [0] origin country, [1] origin port,
+          [2] dest country, [3] dest port.
+    Result table columns (Chinese): 出發地 / 目的地 / 出發船名 / 出發航次 /
+                                    出發日期 / 抵達日期 / 預估運輸時間
     """
     try:
         from selenium.webdriver.common.by import By
@@ -627,8 +691,7 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
         st.error("Please install selenium: pip install selenium")
         return empty_df()
 
-    # POD -> (Country, Port) mapping for IAL form
-    pod_country_map = {
+    pod_config = {
         "HONG KONG": ("HONG KONG", "HONG KONG"),
         "SHEKOU":    ("CHINA",     "SHEKOU"),
         "KAOHSIUNG": ("TAIWAN",    "KAOHSIUNG"),
@@ -640,123 +703,122 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
     if driver is None:
         return empty_df()
 
+    url = "https://www.interasia.cc/Service/Form?servicetype=3"
+
     try:
-        url = "https://www.interasia.cc/Service/Form?servicetype=3"
         for pod in pods:
-            if pod not in pod_country_map:
+            if pod not in pod_config:
                 continue
-            country, port = pod_country_map[pod]
+            dest_country, dest_port = pod_config[pod]
             try:
                 driver.get(url)
-                wait = WebDriverWait(driver, 20)
+                wait = WebDriverWait(driver, 25)
+                time.sleep(2)
+                _dismiss_overlays(driver)
 
-                # Select origin: VIETNAM
-                try:
-                    orig_sel = Select(wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//select[contains(@id,'pol_country') or contains(@name,'pol_country') or contains(@id,'origin_country')]"))))
-                    orig_sel.select_by_visible_text("VIETNAM")
-                    time.sleep(1)
-                except Exception:
-                    # Try selecting any "origin" dropdown
-                    selects = driver.find_elements(By.TAG_NAME, "select")
-                    if len(selects) >= 1:
-                        Select(selects[0]).select_by_visible_text("VIETNAM")
-                        time.sleep(1)
+                wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "select")))
+                time.sleep(1)
 
-                # Select POL: HAIPHONG
-                try:
-                    pol_sel = Select(wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//select[contains(@id,'pol') and not(contains(@id,'country'))]"))))
-                    pol_sel.select_by_visible_text("HAIPHONG")
-                    time.sleep(1)
-                except Exception:
-                    selects = driver.find_elements(By.TAG_NAME, "select")
-                    if len(selects) >= 2:
-                        try:
-                            Select(selects[1]).select_by_visible_text("HAIPHONG")
-                            time.sleep(1)
-                        except Exception:
-                            pass
+                selects = driver.find_elements(By.TAG_NAME, "select")
+                if len(selects) < 2:
+                    st.warning(f"IAL: Found only {len(selects)} select elements on page")
+                    continue
 
-                # Select destination country
-                try:
-                    dst_sel = Select(wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//select[contains(@id,'pod_country') or contains(@name,'pod_country') or contains(@id,'dest_country')]"))))
-                    dst_sel.select_by_visible_text(country)
-                    time.sleep(1)
-                except Exception:
-                    selects = driver.find_elements(By.TAG_NAME, "select")
-                    if len(selects) >= 3:
-                        try:
-                            Select(selects[2]).select_by_visible_text(country)
-                            time.sleep(1)
-                        except Exception:
-                            pass
+                # [0] Origin country = VIETNAM
+                for v in ["VIETNAM", "VN", "Vietnam"]:
+                    if _select_flexible(selects[0], v):
+                        break
+                time.sleep(1.5)
 
-                # Select POD port
-                try:
-                    pod_sel = Select(wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//select[contains(@id,'pod') and not(contains(@id,'country'))]"))))
-                    pod_sel.select_by_visible_text(port)
-                    time.sleep(1)
-                except Exception:
-                    selects = driver.find_elements(By.TAG_NAME, "select")
-                    if len(selects) >= 4:
-                        try:
-                            Select(selects[3]).select_by_visible_text(port)
-                            time.sleep(1)
-                        except Exception:
-                            pass
+                selects = driver.find_elements(By.TAG_NAME, "select")
 
-                # Click search button
-                try:
-                    search_btn = wait.until(EC.element_to_be_clickable(
-                        (By.XPATH, "//button[contains(@class,'search') or contains(text(),'查詢') or contains(text(),'Search')]")))
-                    search_btn.click()
-                except Exception:
-                    buttons = driver.find_elements(By.TAG_NAME, "button")
-                    for btn in buttons:
-                        txt = btn.text.strip()
-                        if any(k in txt for k in ["查詢", "Search", "SEARCH", "搜尋"]):
-                            btn.click()
+                # [1] Origin port = HAIPHONG
+                if len(selects) >= 2:
+                    for v in ["HAIPHONG", "HAI PHONG", "HPH", "Haiphong"]:
+                        if _select_flexible(selects[1], v):
                             break
-                time.sleep(3)
+                time.sleep(1.5)
 
-                # Extract results table
+                selects = driver.find_elements(By.TAG_NAME, "select")
+
+                # [2] Dest country
+                if len(selects) >= 3:
+                    for v in [dest_country, dest_country.split()[0]]:
+                        if _select_flexible(selects[2], v):
+                            break
+                time.sleep(1.5)
+
+                selects = driver.find_elements(By.TAG_NAME, "select")
+
+                # [3] Dest port
+                if len(selects) >= 4:
+                    for v in [dest_port, dest_port[:4]]:
+                        if _select_flexible(selects[3], v):
+                            break
+                time.sleep(1)
+
+                # Click 查詢 / Search button
+                search_btn = None
+                for xpath in [
+                    "//button[contains(text(),'查詢')]",
+                    "//button[contains(text(),'Search')]",
+                    "//input[@type='submit']",
+                    "//button[@type='submit']",
+                    "//a[contains(text(),'查詢')]",
+                    "//input[@type='button']",
+                ]:
+                    els = driver.find_elements(By.XPATH, xpath)
+                    if els:
+                        search_btn = els[0]
+                        break
+                if not search_btn:
+                    btns = driver.find_elements(By.TAG_NAME, "button")
+                    if btns:
+                        search_btn = btns[-1]
+
+                if search_btn:
+                    _js_click(driver, search_btn)
+                    time.sleep(4)
+                else:
+                    st.warning("IAL: Cannot find search button")
+                    continue
+
+                # Parse result table
                 tables = driver.find_elements(By.TAG_NAME, "table")
-                for table in tables:
-                    header_cells = table.find_elements(By.XPATH, ".//th")
-                    if not header_cells:
+                for tbl in tables:
+                    all_trs = tbl.find_elements(By.XPATH, ".//tr")
+                    if len(all_trs) < 2:
                         continue
-                    headers = [h.text.strip() for h in header_cells]
+                    header_cells = all_trs[0].find_elements(By.XPATH, ".//th|.//td")
+                    headers = [c.text.strip() for c in header_cells]
 
-                    def find_col_ial(kws):
+                    def fci(kws):
                         for j, h in enumerate(headers):
                             if any(k.lower() in h.lower() for k in kws):
                                 return j
                         return None
 
-                    c_vessel  = find_col_ial(["出發船名", "vessel", "船名"])
-                    c_voyage  = find_col_ial(["出發航次", "voyage", "航次"])
-                    c_etd_i   = find_col_ial(["出發日期", "etd", "departure"])
-                    c_eta_i   = find_col_ial(["抵達日期", "eta", "arrival"])
-                    c_tt      = find_col_ial(["預估運輸", "transit", "t/t"])
+                    c_vessel = fci(["出發船名", "vessel", "ship"])
+                    c_voyage = fci(["出發航次", "voyage"])
+                    c_etd    = fci(["出發日期", "etd", "departure"])
+                    c_eta    = fci(["抵達日期", "eta", "arrival"])
+                    c_tt     = fci(["預估運輸", "transit", "t/t"])
 
-                    if c_vessel is None or c_etd_i is None:
+                    if c_vessel is None and c_etd is None:
                         continue
 
-                    tbody_rows = table.find_elements(By.XPATH, ".//tbody/tr")
-                    for tr in tbody_rows:
-                        cells = tr.find_elements(By.TAG_NAME, "td")
-                        if not cells:
+                    for tr in all_trs[1:]:
+                        tds = tr.find_elements(By.XPATH, ".//td")
+                        if not tds:
                             continue
-                        def gc(idx):
-                            return cells[idx].text.strip() if idx is not None and idx < len(cells) else ""
+
+                        def gc(i):
+                            return tds[i].text.strip() if i is not None and i < len(tds) else ""
 
                         vessel  = gc(c_vessel)
                         voyage  = gc(c_voyage)
-                        etd_raw = gc(c_etd_i)
-                        eta_raw = gc(c_eta_i)
+                        etd_raw = gc(c_etd)
+                        eta_raw = gc(c_eta)
                         tt_raw  = gc(c_tt)
 
                         if not vessel or not etd_raw:
@@ -765,7 +827,6 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
                         etd_str = safe_date_str(etd_raw)
                         eta_str = safe_date_str(eta_raw)
 
-                        # Filter by month/year
                         try:
                             etd_dt = datetime.strptime(etd_str, "%Y/%m/%d")
                             if etd_dt.year != year or etd_dt.month != month:
@@ -773,9 +834,10 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
                         except Exception:
                             pass
 
-                        tt_str = tt_raw if tt_raw else ""
-                        if tt_str and re.match(r"^\d+$", tt_str):
-                            tt_str = f"{tt_str} Days"
+                        tt_str = tt_raw.strip() if tt_raw else ""
+                        if tt_str and re.match(r"^\d+$", tt_str.split()[0]):
+                            if "day" not in tt_str.lower():
+                                tt_str = f"{tt_str} Days"
 
                         rows.append({
                             "POL": "HAIPHONG", "POD": pod,
@@ -796,25 +858,30 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=OUTPUT_COLS) if rows else empty_df()
 
 
+# ─────────────────────────────────────────────
+# KMTC Scraper
+# ─────────────────────────────────────────────
+
 def scrape_kmtc(year: int, month: int, pods: list) -> pd.DataFrame:
     """
-    Scrape KMTC schedule from https://www.ekmtc.com
-    POL: HAIPHONG -> PODs: HONG KONG, SHEKOU, KAOHSIUNG, TAICHUNG
+    Scrape KMTC schedule from https://www.ekmtc.com (Vue.js SPA).
+    Direct URL params pre-fill the search. After load, click Search,
+    then follow detail links and parse: Vessel/Voyage, Departure Date,
+    Arrival Date, Total T/T, CY CUT, VGM closing.
     """
     try:
         from selenium.webdriver.common.by import By
-        from selenium.webdriver.support.ui import Select, WebDriverWait
+        from selenium.webdriver.support.ui import WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
     except ImportError:
         st.error("Please install selenium: pip install selenium")
         return empty_df()
 
-    # KMTC URL parameters for each POD
-    pod_url_map = {
-        "HONG KONG": f"https://www.ekmtc.com/index.html#/schedule/leg?porCtrCd=VN&porPlcCd=HPH&dlyCtrCd=HK&dlyPlcCd=HKG&yyyymm={year:04d}{month:02d}&loginChk=",
-        "SHEKOU":    f"https://www.ekmtc.com/index.html#/schedule/leg?porCtrCd=VN&porPlcCd=HPH&dlyCtrCd=CN&dlyPlcCd=SKU&yyyymm={year:04d}{month:02d}&loginChk=",
-        "KAOHSIUNG": f"https://www.ekmtc.com/index.html#/schedule/leg?porCtrCd=VN&porPlcCd=HPH&dlyCtrCd=TW&dlyPlcCd=KHH&yyyymm={year:04d}{month:02d}&loginChk=",
-        "TAICHUNG":  f"https://www.ekmtc.com/index.html#/schedule/leg?porCtrCd=VN&porPlcCd=HPH&dlyCtrCd=TW&dlyPlcCd=TXG&yyyymm={year:04d}{month:02d}&loginChk=",
+    pod_params = {
+        "HONG KONG": ("HK", "HKG"),
+        "SHEKOU":    ("CN", "SKU"),
+        "KAOHSIUNG": ("TW", "KHH"),
+        "TAICHUNG":  ("TW", "TXG"),
     }
 
     rows = []
@@ -824,53 +891,68 @@ def scrape_kmtc(year: int, month: int, pods: list) -> pd.DataFrame:
 
     try:
         for pod in pods:
-            if pod not in pod_url_map:
+            if pod not in pod_params:
                 continue
-            url = pod_url_map[pod]
+            dly_ctr, dly_plc = pod_params[pod]
+            yyyymm = f"{year:04d}{month:02d}"
+            url = (
+                f"https://www.ekmtc.com/index.html#/schedule/leg"
+                f"?porCtrCd=VN&porPlcCd=HPH"
+                f"&dlyCtrCd={dly_ctr}&dlyPlcCd={dly_plc}"
+                f"&yyyymm={yyyymm}&loginChk="
+            )
             try:
                 driver.get(url)
-                wait = WebDriverWait(driver, 25)
-                time.sleep(4)  # Wait for SPA to load
+                time.sleep(6)
+                _dismiss_overlays(driver)
+                time.sleep(1)
 
-                # Click Search button if present
-                try:
-                    search_btn = wait.until(EC.element_to_be_clickable(
-                        (By.XPATH, "//button[contains(text(),'Search') or contains(@class,'search-btn') or contains(@id,'searchBtn')]")))
-                    search_btn.click()
-                    time.sleep(3)
-                except Exception:
-                    pass
-
-                # KMTC shows a calendar; find all date links
-                date_links = driver.find_elements(By.XPATH,
-                    "//td[contains(@class,'calendar') or contains(@class,'schedule')]//a | "
-                    "//div[contains(@class,'cal')]//a | //td//a[contains(@href,'schedule')]")
-
-                if not date_links:
-                    # Try to find any clickable schedule items
-                    date_links = driver.find_elements(By.XPATH,
-                        "//a[contains(@class,'sched') or contains(@onclick,'schedule')]")
-
-                schedule_urls = set()
-                for link in date_links:
-                    href = link.get_attribute("href") or ""
-                    if href and "schedule" in href.lower():
-                        schedule_urls.add(href)
-
-                # If no links found, try to parse the current page table
-                if not schedule_urls:
-                    _extract_kmtc_table(driver, pod, year, month, rows)
-                else:
-                    for sched_url in list(schedule_urls)[:50]:
+                # Click Search button with JS
+                for xpath in [
+                    "//button[contains(text(),'Search')]",
+                    "//button[contains(text(),'SEARCH')]",
+                    "//button[@id='searchBtn']",
+                    "//button[contains(@class,'btn-search') or contains(@class,'search-btn')]",
+                    "//input[@type='button' and contains(@value,'Search')]",
+                ]:
+                    els = driver.find_elements(By.XPATH, xpath)
+                    for el in els:
                         try:
-                            driver.get(sched_url)
-                            time.sleep(2)
-                            _extract_kmtc_detail(driver, pod, year, month, rows)
+                            if el.is_displayed():
+                                _js_click(driver, el)
+                                time.sleep(4)
+                                break
                         except Exception:
-                            continue
+                            pass
 
-                # Also try to parse any visible schedule tables on current page
+                # Parse the listing page first
                 _extract_kmtc_table(driver, pod, year, month, rows)
+                _parse_kmtc_calendar(driver, pod, year, month, rows)
+
+                # Follow detail links
+                detail_links = []
+                for link_xpath in [
+                    "//a[contains(@href,'detail')]",
+                    "//a[contains(@href,'view')]",
+                    "//td//a[@href]",
+                    "//div[contains(@class,'cal')]//a[@href]",
+                ]:
+                    detail_links.extend(driver.find_elements(By.XPATH, link_xpath))
+
+                visited = set()
+                for link in detail_links[:50]:
+                    try:
+                        href = link.get_attribute("href")
+                        if not href or href in visited or "#" not in href:
+                            continue
+                        visited.add(href)
+                        driver.get(href)
+                        time.sleep(2.5)
+                        _extract_kmtc_detail(driver, pod, year, month, rows)
+                        driver.back()
+                        time.sleep(2)
+                    except Exception:
+                        continue
 
             except Exception as e:
                 st.warning(f"KMTC scraping error for {pod}: {e}")
@@ -883,35 +965,40 @@ def scrape_kmtc(year: int, month: int, pods: list) -> pd.DataFrame:
 
 
 def _extract_kmtc_table(driver, pod: str, year: int, month: int, rows: list):
-    """Extract schedule info from KMTC table on current page."""
+    """Parse KMTC schedule table on current page."""
     try:
-        from selenium.webdriver.by import By
+        from selenium.webdriver.common.by import By
         tables = driver.find_elements(By.TAG_NAME, "table")
         for table in tables:
-            ths = table.find_elements(By.TAG_NAME, "th")
-            headers = [th.text.strip().lower() for th in ths]
-            if not any("vessel" in h or "departure" in h or "arrival" in h for h in headers):
+            all_trs = table.find_elements(By.XPATH, ".//tr")
+            if len(all_trs) < 2:
+                continue
+            header_cells = all_trs[0].find_elements(By.XPATH, ".//th|.//td")
+            headers = [c.text.strip().lower() for c in header_cells]
+            if not any("vessel" in h or "departure" in h or "arrival" in h or "etd" in h
+                       for h in headers):
                 continue
 
             def fci(kws):
                 for j, h in enumerate(headers):
-                    if any(k.lower() in h for k in kws):
+                    if any(k in h for k in kws):
                         return j
                 return None
 
-            c_vessel  = fci(["vessel", "ship"])
-            c_voyage  = fci(["voyage"])
-            c_etd     = fci(["departure", "etd"])
-            c_eta     = fci(["arrival", "eta"])
-            c_tt      = fci(["t/t", "transit", "total t"])
-            c_cy      = fci(["cy cut", "cy"])
-            c_si      = fci(["vgm", "si cut", "si closing"])
+            c_vessel = fci(["vessel", "ship"])
+            c_voyage = fci(["voyage"])
+            c_etd    = fci(["departure", "etd", "date of dep"])
+            c_eta    = fci(["arrival", "eta", "date of arr"])
+            c_tt     = fci(["t/t", "transit", "total t"])
+            c_cy     = fci(["cy cut", "cy"])
+            c_si     = fci(["vgm", "si cut", "si clos"])
 
-            tbody_rows = table.find_elements(By.XPATH, ".//tbody/tr")
-            for tr in tbody_rows:
-                tds = tr.find_elements(By.TAG_NAME, "td")
+            if c_vessel is None or c_etd is None:
+                continue
+
+            for tr in all_trs[1:]:
+                tds = tr.find_elements(By.XPATH, ".//td")
                 def gc(i): return tds[i].text.strip() if i is not None and i < len(tds) else ""
-
                 vessel  = gc(c_vessel)
                 voyage  = gc(c_voyage)
                 etd_str = safe_date_str(gc(c_etd))
@@ -919,7 +1006,6 @@ def _extract_kmtc_table(driver, pod: str, year: int, month: int, rows: list):
                 tt_str  = gc(c_tt)
                 cy_str  = gc(c_cy)
                 si_str  = gc(c_si)
-
                 if not vessel or not etd_str:
                     continue
                 try:
@@ -928,15 +1014,10 @@ def _extract_kmtc_table(driver, pod: str, year: int, month: int, rows: list):
                         continue
                 except Exception:
                     pass
-
-                if tt_str and re.match(r"^\d+$", tt_str):
+                if tt_str and re.match(r"^\d+$", tt_str.strip()):
                     tt_str = f"{tt_str} Days"
-
-                # Avoid duplicates
-                is_dup = any(
-                    r["Vessel"] == vessel and r["Voyage"] == voyage
-                    and r["POD"] == pod for r in rows
-                )
+                is_dup = any(r["Vessel"] == vessel and r["Voyage"] == voyage
+                             and r["POD"] == pod for r in rows)
                 if not is_dup:
                     rows.append({
                         "POL": "HAIPHONG", "POD": pod,
@@ -951,55 +1032,152 @@ def _extract_kmtc_table(driver, pod: str, year: int, month: int, rows: list):
 
 
 def _extract_kmtc_detail(driver, pod: str, year: int, month: int, rows: list):
-    """Extract from KMTC detail page."""
+    """Extract schedule from KMTC detail page using label-value pairs."""
     try:
-        from selenium.webdriver.by import By
-        page_text = driver.find_element(By.TAG_NAME, "body").text
+        from selenium.webdriver.common.by import By
 
-        vessel_m  = re.search(r"Vessel[/\s]+Voyage[:\s]+([A-Z][A-Z\s]+?)\s+(\w+)", page_text)
-        etd_m     = re.search(r"Date of Departure[:\s]+([\d/\-]+)", page_text)
-        eta_m     = re.search(r"Date of Arrival[:\s]+([\d/\-]+)", page_text)
-        tt_m      = re.search(r"Total T/T[:\s]+(\d+\s*Days?)", page_text, re.IGNORECASE)
-        cy_m      = re.search(r"CY CUT[:\s]+([\d/\-\s:]+)", page_text, re.IGNORECASE)
-        vgm_m     = re.search(r"VGM closing[:\s]+([\d/\-\s:]+)", page_text, re.IGNORECASE)
+        def find_val(label_kws: list) -> str:
+            for kw in label_kws:
+                kw_lower = kw.lower()
+                # th/td sibling pattern
+                for xpath in [
+                    f"//th[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{kw_lower}')]/following-sibling::td[1]",
+                    f"//td[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{kw_lower}')]/following-sibling::td[1]",
+                    f"//dt[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{kw_lower}')]/following-sibling::dd[1]",
+                    f"//span[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{kw_lower}')]/following-sibling::span[1]",
+                ]:
+                    els = driver.find_elements(By.XPATH, xpath)
+                    if els:
+                        return els[0].text.strip()
+            return ""
 
-        if vessel_m and etd_m:
-            vessel  = vessel_m.group(1).strip()
-            voyage  = vessel_m.group(2).strip()
-            etd_str = safe_date_str(etd_m.group(1).strip())
-            eta_str = safe_date_str(eta_m.group(1).strip()) if eta_m else ""
-            tt_str  = tt_m.group(1).strip() if tt_m else ""
-            cy_str  = cy_m.group(1).strip()  if cy_m  else ""
-            si_str  = vgm_m.group(1).strip() if vgm_m else ""
+        vv      = find_val(["vessel/voyage", "vessel"])
+        etd_val = find_val(["date of departure", "etd"])
+        eta_val = find_val(["date of arrival", "eta"])
+        tt_val  = find_val(["total t/t", "transit time", "t/t"])
+        cy_val  = find_val(["cy cut", "cy closing"])
+        si_val  = find_val(["vgm closing", "si cut", "doc cut"])
 
-            try:
-                etd_dt = datetime.strptime(etd_str, "%Y/%m/%d")
-                if etd_dt.year != year or etd_dt.month != month:
-                    return
-            except Exception:
+        vessel, voyage = "", ""
+        if vv:
+            parts = vv.strip().split()
+            if len(parts) >= 2:
+                voyage = parts[-1]
+                vessel = " ".join(parts[:-1])
+            else:
+                vessel = vv
+
+        # Text fallback
+        if not vessel or not etd_val:
+            body = driver.find_element(By.TAG_NAME, "body").text
+            if not vv:
+                m = re.search(r"Vessel\s*/\s*Voyage[:\s]+([A-Z][A-Z\s]+?)\s+([\w]+)\b",
+                               body, re.IGNORECASE)
+                if m:
+                    vessel = m.group(1).strip()
+                    voyage = m.group(2).strip()
+            if not etd_val:
+                m = re.search(r"Date\s+of\s+Departure[:\s]+([\d]{4}[/\.\-][\d]{1,2}[/\.\-][\d]{1,2})",
+                               body, re.IGNORECASE)
+                if m: etd_val = m.group(1)
+            if not eta_val:
+                m = re.search(r"Date\s+of\s+Arrival[:\s]+([\d]{4}[/\.\-][\d]{1,2}[/\.\-][\d]{1,2})",
+                               body, re.IGNORECASE)
+                if m: eta_val = m.group(1)
+            if not tt_val:
+                m = re.search(r"Total\s+T/T[:\s]+(\d+\s*Days?)", body, re.IGNORECASE)
+                if m: tt_val = m.group(1).strip()
+            if not cy_val:
+                m = re.search(r"CY\s+CUT[:\s]+([\d]{4}[/\.\-][\d]{1,2}[/\.\-][\d]{1,2}\s*[\d:]*)",
+                               body, re.IGNORECASE)
+                if m: cy_val = m.group(1).strip()
+            if not si_val:
+                m = re.search(r"VGM\s+closing[:\s]+([\d]{4}[/\.\-][\d]{1,2}[/\.\-][\d]{1,2}\s*[\d:]*)",
+                               body, re.IGNORECASE)
+                if m: si_val = m.group(1).strip()
+
+        if not vessel or not etd_val:
+            return
+
+        etd_str = safe_date_str(etd_val)
+        if not etd_str:
+            return
+        try:
+            etd_dt = datetime.strptime(etd_str, "%Y/%m/%d")
+            if etd_dt.year != year or etd_dt.month != month:
                 return
+        except Exception:
+            return
 
-            is_dup = any(
-                r["Vessel"] == vessel and r["Voyage"] == voyage
-                and r["POD"] == pod for r in rows
-            )
-            if not is_dup:
-                rows.append({
-                    "POL": "HAIPHONG", "POD": pod,
-                    "Vessel": vessel, "Voyage": voyage,
-                    "ETD": etd_str, "ETA": eta_str,
-                    "T/T Time": tt_str,
-                    "CY Cut-off": cy_str,
-                    "SI Cut-off": si_str,
-                })
+        if tt_val and re.match(r"^\d+$", tt_val.strip()):
+            tt_val = f"{tt_val} Days"
+
+        is_dup = any(r["Vessel"] == vessel and r["Voyage"] == voyage
+                     and r["POD"] == pod for r in rows)
+        if not is_dup:
+            rows.append({
+                "POL": "HAIPHONG", "POD": pod,
+                "Vessel": vessel, "Voyage": voyage,
+                "ETD": etd_str, "ETA": safe_date_str(eta_val),
+                "T/T Time": tt_val,
+                "CY Cut-off": cy_val,
+                "SI Cut-off": si_val,
+            })
     except Exception:
         pass
 
 
+def _parse_kmtc_calendar(driver, pod: str, year: int, month: int, rows: list):
+    """Parse KMTC calendar-style listing from page body text."""
+    try:
+        from selenium.webdriver.common.by import By
+        body_text = driver.find_element(By.TAG_NAME, "body").text
+        lines = body_text.split("\n")
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            date_m = re.match(r"(\d{4})[/\-\.](\d{2})[/\-\.](\d{2})", line)
+            if date_m:
+                y, mo, d = int(date_m.group(1)), int(date_m.group(2)), int(date_m.group(3))
+                if y == year and mo == month:
+                    etd_str = f"{y:04d}/{mo:02d}/{d:02d}"
+                    vessel, voyage = "", ""
+                    for j in range(i + 1, min(i + 10, len(lines))):
+                        l2 = lines[j].strip()
+                        if re.match(r"^[A-Z][A-Z\s]{3,}$", l2):
+                            vessel = l2
+                        elif re.match(r"^[A-Z0-9]{3,8}[NnSsEeWw]?$", l2):
+                            voyage = l2
+                        elif re.match(r"\d{4}[/\-\.]\d{2}[/\-\.]\d{2}", l2):
+                            break
+                    if vessel:
+                        is_dup = any(r["Vessel"] == vessel and r["ETD"] == etd_str
+                                     and r["POD"] == pod for r in rows)
+                        if not is_dup:
+                            rows.append({
+                                "POL": "HAIPHONG", "POD": pod,
+                                "Vessel": vessel, "Voyage": voyage,
+                                "ETD": etd_str, "ETA": "",
+                                "T/T Time": "", "CY Cut-off": "", "SI Cut-off": "",
+                            })
+            i += 1
+    except Exception:
+        pass
+
+
+# ─────────────────────────────────────────────
+# YML Scraper
+# ─────────────────────────────────────────────
+
 def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
     """
-    Scrape YML schedule from https://www.yangming.com/en/esolution/schedule/point_to_point_search
-    POL: HAIPHONG -> PODs: HONG KONG, SHEKOU, KAOHSIUNG, TAICHUNG
+    Scrape YML Point-to-Point schedule.
+    Key fixes:
+    1. _dismiss_overlays() before every click to clear cookie banners
+    2. Use _js_click() everywhere to bypass ElementClickInterceptedException
+    3. Broad input field discovery via visible inputs list
+    4. Autocomplete: try multiple suggestion container selectors
+    5. Period: set via JS value assignment
     """
     try:
         from selenium.webdriver.common.by import By
@@ -1010,7 +1188,7 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
         st.error("Please install selenium: pip install selenium")
         return empty_df()
 
-    pod_keyword_map = {
+    pod_search_map = {
         "HONG KONG": "Hong Kong",
         "SHEKOU":    "Shekou",
         "KAOHSIUNG": "Kaohsiung",
@@ -1018,116 +1196,163 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
     }
 
     rows = []
+    base_url = "https://www.yangming.com/en/esolution/schedule/point_to_point_search"
     driver = get_driver()
     if driver is None:
         return empty_df()
 
-    base_url = "https://www.yangming.com/en/esolution/schedule/point_to_point_search"
+    # Pre-compute date range
+    import calendar as cal_mod
+    last_day = cal_mod.monthrange(year, month)[1]
+    date_from = f"{year:04d}/{month:02d}/01"
+    date_to   = f"{year:04d}/{month:02d}/{last_day:02d}"
 
     try:
         for pod in pods:
-            if pod not in pod_keyword_map:
+            if pod not in pod_search_map:
                 continue
-            pod_kw = pod_keyword_map[pod]
+            pod_kw = pod_search_map[pod]
+
             try:
                 driver.get(base_url)
-                wait = WebDriverWait(driver, 20)
-                time.sleep(3)
+                wait = WebDriverWait(driver, 25)
+                time.sleep(4)
+                _dismiss_overlays(driver)
+                time.sleep(0.5)
 
-                # Click Point-To-Point tab if needed
-                try:
-                    ptp_tab = wait.until(EC.element_to_be_clickable(
-                        (By.XPATH, "//a[contains(text(),'Point') or contains(text(),'point')]")))
-                    ptp_tab.click()
+                # ── Locate all visible text inputs ─────────────────────────
+                def get_visible_inputs():
+                    return [
+                        inp for inp in driver.find_elements(
+                            By.XPATH,
+                            "//input[@type='text' or @type='search' or not(@type)]"
+                        ) if inp.is_displayed() and inp.is_enabled()
+                    ]
+
+                visible = get_visible_inputs()
+
+                # ── From field: try label-based XPaths, then fallback [0] ──
+                from_inp = None
+                for xpath in [
+                    "//label[contains(text(),'From') or contains(text(),'from')]/following::input[@type!='hidden'][1]",
+                    "//span[contains(text(),'From')]/following::input[@type!='hidden'][1]",
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'from')]",
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'location')]",
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'departure')]",
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'origin')]",
+                ]:
+                    els = driver.find_elements(By.XPATH, xpath)
+                    vis = [e for e in els if e.is_displayed() and e.is_enabled()]
+                    if vis:
+                        from_inp = vis[0]
+                        break
+                if not from_inp and visible:
+                    from_inp = visible[0]
+
+                if from_inp:
+                    driver.execute_script("arguments[0].value = '';", from_inp)
+                    driver.execute_script("arguments[0].focus();", from_inp)
+                    from_inp.send_keys("Haiphong")
                     time.sleep(2)
-                except Exception:
-                    pass
+                    # Accept autocomplete
+                    _accept_autocomplete(driver, "haiphong")
+                else:
+                    st.warning(f"YML: Cannot locate From field for {pod}")
 
-                # Fill "From" field: HaiPhong
-                try:
-                    from_input = wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//input[contains(@placeholder,'From') or contains(@id,'from') or contains(@name,'from')]")))
-                    from_input.clear()
-                    from_input.send_keys("HaiPhong")
-                    time.sleep(1)
-                    # Select autocomplete suggestion
-                    suggestions = driver.find_elements(By.XPATH,
-                        "//li[contains(text(),'Haiphong') or contains(text(),'HAIPHONG') or contains(text(),'HaiPhong')]")
-                    if suggestions:
-                        suggestions[0].click()
-                        time.sleep(1)
-                    else:
-                        from_input.send_keys(Keys.RETURN)
-                        time.sleep(1)
-                except Exception as e:
-                    st.warning(f"YML: Failed to fill From field: {e}")
+                # ── To field ───────────────────────────────────────────────
+                to_inp = None
+                for xpath in [
+                    "//label[contains(text(),' To') or text()='To']/following::input[@type!='hidden'][1]",
+                    "//span[contains(text(),' To') or text()='To']/following::input[@type!='hidden'][1]",
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'to')]",
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'destination')]",
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'arrival')]",
+                ]:
+                    els = driver.find_elements(By.XPATH, xpath)
+                    vis = [e for e in els if e.is_displayed() and e.is_enabled()]
+                    if vis:
+                        to_inp = vis[0]
+                        break
+                if not to_inp:
+                    visible = get_visible_inputs()
+                    if len(visible) >= 2:
+                        to_inp = visible[1]
 
-                # Fill "To" field: destination
-                try:
-                    to_input = wait.until(EC.presence_of_element_located(
-                        (By.XPATH, "//input[contains(@placeholder,'To') or contains(@id,'to') or contains(@name,'to')]")))
-                    to_input.clear()
-                    to_input.send_keys(pod_kw)
-                    time.sleep(1)
-                    suggestions = driver.find_elements(By.XPATH,
-                        f"//li[contains(text(),'{pod_kw}')]")
-                    if suggestions:
-                        suggestions[0].click()
-                        time.sleep(1)
-                    else:
-                        to_input.send_keys(Keys.RETURN)
-                        time.sleep(1)
-                except Exception as e:
-                    st.warning(f"YML: Failed to fill To field: {e}")
+                if to_inp:
+                    driver.execute_script("arguments[0].value = '';", to_inp)
+                    driver.execute_script("arguments[0].focus();", to_inp)
+                    to_inp.send_keys(pod_kw)
+                    time.sleep(2)
+                    _accept_autocomplete(driver, pod_kw.lower())
+                else:
+                    st.warning(f"YML: Cannot locate To field for {pod}")
 
-                # Set period (select the month)
-                yyyymm = f"{year:04d}/{month:02d}"
-                try:
-                    period_input = driver.find_elements(By.XPATH,
-                        "//input[contains(@id,'period') or contains(@name,'period') or contains(@placeholder,'Period')]")
-                    if period_input:
-                        period_input[0].clear()
-                        period_input[0].send_keys(yyyymm)
-                        time.sleep(1)
-                except Exception:
-                    pass
+                # ── Period inputs ──────────────────────────────────────────
+                period_inputs = driver.find_elements(By.XPATH,
+                    "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'period')"
+                    " or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'date')"
+                    " or contains(@id,'period') or contains(@name,'period')]"
+                )
+                if len(period_inputs) >= 2:
+                    driver.execute_script(f"arguments[0].value='{date_from}';", period_inputs[0])
+                    driver.execute_script(f"arguments[1].value='{date_to}';", period_inputs[1])
+                elif len(period_inputs) == 1:
+                    driver.execute_script(f"arguments[0].value='{date_from}';", period_inputs[0])
 
-                # Click Search
-                try:
-                    search_btn = wait.until(EC.element_to_be_clickable(
-                        (By.XPATH, "//button[contains(text(),'Search') or @type='submit']")))
-                    search_btn.click()
-                    time.sleep(4)
-                except Exception as e:
-                    st.warning(f"YML: Failed to click Search button: {e}")
+                # ── Search button: dismiss overlays FIRST, then JS click ───
+                _dismiss_overlays(driver)
+                time.sleep(0.5)
 
-                # Extract results
+                search_btn = None
+                for xpath in [
+                    "//button[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'search')]",
+                    "//input[@type='submit']",
+                    "//button[@type='submit']",
+                    "//a[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'search')]",
+                    "//button[contains(@class,'search') or contains(@id,'search')]",
+                ]:
+                    els = driver.find_elements(By.XPATH, xpath)
+                    vis = [e for e in els if e.is_displayed()]
+                    if vis:
+                        search_btn = vis[0]
+                        break
+
+                if search_btn:
+                    _js_click(driver, search_btn)
+                    time.sleep(5)
+                else:
+                    st.warning(f"YML: Cannot find Search button for {pod}")
+                    continue
+
+                # ── Parse results ──────────────────────────────────────────
+                # Tables
                 tables = driver.find_elements(By.TAG_NAME, "table")
-                for table in tables:
-                    ths = table.find_elements(By.TAG_NAME, "th")
-                    headers = [th.text.strip().lower() for th in ths]
+                for tbl in tables:
+                    all_trs = tbl.find_elements(By.XPATH, ".//tr")
+                    if len(all_trs) < 2:
+                        continue
+                    header_cells = all_trs[0].find_elements(By.XPATH, ".//th|.//td")
+                    headers = [c.text.strip().lower() for c in header_cells]
                     if not any("vessel" in h or "etd" in h or "departure" in h for h in headers):
                         continue
 
                     def fci(kws):
                         for j, h in enumerate(headers):
-                            if any(k.lower() in h for k in kws):
+                            if any(k in h for k in kws):
                                 return j
                         return None
 
-                    c_vessel  = fci(["vessel"])
-                    c_voyage  = fci(["voyage"])
-                    c_etd_y   = fci(["etd", "departure"])
-                    c_eta_y   = fci(["eta", "arrival"])
-                    c_tt      = fci(["t/t", "transit"])
-                    c_cy      = fci(["cy cut", "cy"])
-                    c_si      = fci(["si cut", "si "])
+                    c_vessel = fci(["vessel"])
+                    c_voyage = fci(["voyage"])
+                    c_etd_y  = fci(["etd", "departure"])
+                    c_eta_y  = fci(["eta", "arrival"])
+                    c_tt     = fci(["t/t", "transit"])
+                    c_cy     = fci(["cy"])
+                    c_si     = fci(["si cut", "si "])
 
-                    tbody_rows = table.find_elements(By.XPATH, ".//tbody/tr")
-                    for tr in tbody_rows:
-                        tds = tr.find_elements(By.TAG_NAME, "td")
+                    for tr in all_trs[1:]:
+                        tds = tr.find_elements(By.XPATH, ".//td")
                         def gc(i): return tds[i].text.strip() if i is not None and i < len(tds) else ""
-
                         vessel  = gc(c_vessel)
                         voyage  = gc(c_voyage)
                         etd_str = safe_date_str(gc(c_etd_y))
@@ -1135,20 +1360,16 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
                         tt_str  = gc(c_tt)
                         cy_str  = gc(c_cy)
                         si_str  = gc(c_si)
-
                         if not vessel or not etd_str:
                             continue
-
                         try:
                             etd_dt = datetime.strptime(etd_str, "%Y/%m/%d")
                             if etd_dt.year != year or etd_dt.month != month:
                                 continue
                         except Exception:
                             pass
-
-                        if tt_str and re.match(r"^\d+$", tt_str):
+                        if tt_str and re.match(r"^\d+$", tt_str.strip()):
                             tt_str = f"{tt_str} Days"
-
                         rows.append({
                             "POL": "HAIPHONG", "POD": pod,
                             "Vessel": vessel, "Voyage": voyage,
@@ -1158,45 +1379,15 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
                             "SI Cut-off": si_str,
                         })
 
-                # Also try to parse text-based results (YML may use divs)
-                result_divs = driver.find_elements(By.XPATH,
-                    "//div[contains(@class,'result') or contains(@class,'schedule-item') or contains(@class,'row-item')]")
-                for div in result_divs:
-                    text = div.text
-                    vessel_m = re.search(r"(?:Vessel|Ship)[:\s]+([A-Z][A-Z\s]+?)(?:\n|Voyage|/)", text, re.IGNORECASE)
-                    voyage_m = re.search(r"(?:Voyage)[:\s]*(\w+)", text, re.IGNORECASE)
-                    etd_m    = re.search(r"(?:ETD|Departure)[:\s]*([\d]{4}[/\-][\d]{2}[/\-][\d]{2})", text, re.IGNORECASE)
-                    eta_m    = re.search(r"(?:ETA|Arrival)[:\s]*([\d]{4}[/\-][\d]{2}[/\-][\d]{2})", text, re.IGNORECASE)
-                    tt_m     = re.search(r"(?:T/T|Transit)[:\s]*(\d+\s*Days?)", text, re.IGNORECASE)
-                    cy_m     = re.search(r"(?:CY)[:\s]*([\d/\-\s:]+)", text, re.IGNORECASE)
-                    si_m     = re.search(r"(?:SI Cut)[:\s]*([\w\s]+)", text, re.IGNORECASE)
-
-                    if vessel_m and etd_m:
-                        etd_str = safe_date_str(etd_m.group(1))
-                        try:
-                            etd_dt = datetime.strptime(etd_str, "%Y/%m/%d")
-                            if etd_dt.year != year or etd_dt.month != month:
-                                continue
-                        except Exception:
-                            continue
-
-                        vessel = vessel_m.group(1).strip()
-                        voyage = voyage_m.group(1).strip() if voyage_m else ""
-                        is_dup = any(
-                            r["Vessel"] == vessel and r["Voyage"] == voyage
-                            and r["POD"] == pod for r in rows
-                        )
-                        if not is_dup:
-                            rows.append({
-                                "POL": "HAIPHONG", "POD": pod,
-                                "Vessel": vessel,
-                                "Voyage": voyage,
-                                "ETD": etd_str,
-                                "ETA": safe_date_str(eta_m.group(1)) if eta_m else "",
-                                "T/T Time": tt_m.group(1).strip() if tt_m else "",
-                                "CY Cut-off": cy_m.group(1).strip() if cy_m else "",
-                                "SI Cut-off": si_m.group(1).strip() if si_m else "",
-                            })
+                # Div/card-based results
+                for card_xpath in [
+                    "//div[contains(@class,'result') and .//text()[string-length(.) > 5]]",
+                    "//div[contains(@class,'schedule')]",
+                    "//div[contains(@class,'voyage')]",
+                    "//li[contains(@class,'schedule')]",
+                ]:
+                    for card in driver.find_elements(By.XPATH, card_xpath):
+                        _parse_yml_card(card.text, pod, year, month, rows)
 
             except Exception as e:
                 st.warning(f"YML scraping error for {pod}: {e}")
@@ -1206,6 +1397,85 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
         driver.quit()
 
     return pd.DataFrame(rows, columns=OUTPUT_COLS) if rows else empty_df()
+
+
+def _accept_autocomplete(driver, keyword: str):
+    """Accept autocomplete suggestion containing keyword."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.common.keys import Keys
+    # Try multiple dropdown/suggestion containers
+    for ac_xpath in [
+        f"//*[contains(translate(text(),'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'{keyword}') and (self::li or self::div or self::span)]",
+        "//ul[contains(@class,'suggest') or contains(@class,'dropdown') or contains(@class,'auto')]//li[1]",
+        "//div[contains(@class,'suggest') or contains(@class,'dropdown') or contains(@class,'option')][1]",
+        "//*[contains(@class,'suggestion-item') or contains(@class,'autocomplete-item')][1]",
+        "//*[@role='option'][1]",
+        "//*[@role='listbox']//li[1]",
+    ]:
+        suggestions = driver.find_elements(By.XPATH, ac_xpath)
+        vis = [s for s in suggestions if s.is_displayed()]
+        if vis:
+            try:
+                _js_click(driver, vis[0])
+                time.sleep(0.8)
+                return
+            except Exception:
+                pass
+    # Fallback: keyboard navigation
+    try:
+        active = driver.switch_to.active_element
+        active.send_keys(Keys.ARROW_DOWN)
+        time.sleep(0.3)
+        active.send_keys(Keys.RETURN)
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+
+def _parse_yml_card(text: str, pod: str, year: int, month: int, rows: list):
+    """Parse YML schedule data from a text block."""
+    if not text or len(text) < 10:
+        return
+    date_p = r"(\d{4}[/\-\.]\d{2}[/\-\.]\d{2})"
+    dates = re.findall(date_p, text)
+    if not dates:
+        return
+
+    # Vessel: all-caps sequence
+    vessel_m = re.search(r"\b([A-Z][A-Z\s]{3,30})\b", text)
+    voyage_m = re.search(r"\b([A-Z0-9]{3,8}[NnSsEeWw]?)\b", text)
+    vessel   = vessel_m.group(1).strip() if vessel_m else ""
+    voyage   = voyage_m.group(1).strip() if voyage_m else ""
+
+    etd_str = safe_date_str(dates[0]) if dates else ""
+    eta_str = safe_date_str(dates[1]) if len(dates) >= 2 else ""
+
+    if not vessel or not etd_str:
+        return
+
+    try:
+        etd_dt = datetime.strptime(etd_str, "%Y/%m/%d")
+        if etd_dt.year != year or etd_dt.month != month:
+            return
+    except Exception:
+        return
+
+    cy_m = re.search(r"CY[:\s]*(" + date_p[1:-1] + r"[\s\d:]*)", text, re.IGNORECASE)
+    si_m = re.search(r"(?:SI\s*Cut|Contact)[:\s]*([^\n]+)", text, re.IGNORECASE)
+    tt_m = re.search(r"T/T[:\s]*(\d+\s*Days?)", text, re.IGNORECASE)
+
+    is_dup = any(r["Vessel"] == vessel and r["Voyage"] == voyage
+                 and r["POD"] == pod for r in rows)
+    if not is_dup:
+        rows.append({
+            "POL": "HAIPHONG", "POD": pod,
+            "Vessel": vessel, "Voyage": voyage,
+            "ETD": etd_str, "ETA": eta_str,
+            "T/T Time": tt_m.group(1).strip() if tt_m else "",
+            "CY Cut-off": cy_m.group(1).strip() if cy_m else "",
+            "SI Cut-off": si_m.group(1).strip() if si_m else "",
+        })
+
 
 
 # ─────────────────────────────────────────────
