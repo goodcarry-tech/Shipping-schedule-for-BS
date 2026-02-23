@@ -146,11 +146,11 @@ def parse_cnc(file_bytes: bytes, filename: str) -> pd.DataFrame:
                     "SI Cut-off": str(row.get("SI Cut-off", "")).strip(),
                 })
         except Exception as e:
-            st.error(f"CNC CSV 解析錯誤: {e}")
+            st.error(f"CNC CSV parse error: {e}")
 
     elif fname_lower.endswith(".pdf"):
         if not PDF_AVAILABLE:
-            st.error("需要安裝 pdfplumber 才能解析 PDF")
+            st.error("pdfplumber is required to parse PDFs. Run: pip install pdfplumber")
             return empty_df()
         try:
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
@@ -210,7 +210,7 @@ def parse_cnc(file_bytes: bytes, filename: str) -> pd.DataFrame:
                                 "SI Cut-off": g("SI Cut-off"),
                             })
         except Exception as e:
-            st.error(f"CNC PDF 解析錯誤: {e}")
+            st.error(f"CNC PDF parse error: {e}")
 
     else:
         # Try Excel
@@ -245,7 +245,7 @@ def parse_cnc(file_bytes: bytes, filename: str) -> pd.DataFrame:
                     "SI Cut-off": str(row.get("SI Cut-off", "")).strip(),
                 })
         except Exception as e:
-            st.error(f"CNC Excel 解析錯誤: {e}")
+            st.error(f"CNC Excel parse error: {e}")
 
     return pd.DataFrame(rows, columns=OUTPUT_COLS) if rows else empty_df()
 
@@ -482,10 +482,10 @@ def parse_tsl(file_bytes: bytes, filename: str,
             wb = openpyxl.load_workbook(io.BytesIO(file_bytes), data_only=True)
             _parse_tsl_excel(wb)
         except Exception as e:
-            st.error(f"TSL Excel 解析錯誤: {e}")
+            st.error(f"TSL Excel parse error: {e}")
     elif fname_lower.endswith(".pdf"):
         if not PDF_AVAILABLE:
-            st.error("需要安裝 pdfplumber 才能解析 PDF")
+            st.error("pdfplumber is required to parse PDFs. Run: pip install pdfplumber")
             return empty_df()
         try:
             with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
@@ -558,9 +558,9 @@ def parse_tsl(file_bytes: bytes, filename: str,
                                 "SI Cut-off": "",
                             })
         except Exception as e:
-            st.error(f"TSL PDF 解析錯誤: {e}")
+            st.error(f"TSL PDF parse error: {e}")
     else:
-        st.warning(f"TSL 不支援的檔案格式: {filename}")
+        st.warning(f"TSL unsupported file format: {filename}")
 
     return pd.DataFrame(rows, columns=OUTPUT_COLS) if rows else empty_df()
 
@@ -610,7 +610,7 @@ def get_driver():
         return webdriver.Chrome(options=options)
 
     except Exception as e:
-        st.error(f"無法啟動瀏覽器驅動: {e}\n請確認已安裝 chromium / chromedriver")
+        st.error(f"Failed to start browser driver: {e}\nPlease ensure chromium and chromedriver are installed.")
         return None
 
 
@@ -624,7 +624,7 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
         from selenium.webdriver.support.ui import Select, WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
     except ImportError:
-        st.error("請安裝 selenium: pip install selenium")
+        st.error("Please install selenium: pip install selenium")
         return empty_df()
 
     # POD -> (Country, Port) mapping for IAL form
@@ -787,7 +787,7 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
                         })
 
             except Exception as e:
-                st.warning(f"IAL 爬取 {pod} 時發生錯誤: {e}")
+                st.warning(f"IAL scraping error for {pod}: {e}")
                 continue
 
     finally:
@@ -806,7 +806,7 @@ def scrape_kmtc(year: int, month: int, pods: list) -> pd.DataFrame:
         from selenium.webdriver.support.ui import Select, WebDriverWait
         from selenium.webdriver.support import expected_conditions as EC
     except ImportError:
-        st.error("請安裝 selenium: pip install selenium")
+        st.error("Please install selenium: pip install selenium")
         return empty_df()
 
     # KMTC URL parameters for each POD
@@ -873,7 +873,7 @@ def scrape_kmtc(year: int, month: int, pods: list) -> pd.DataFrame:
                 _extract_kmtc_table(driver, pod, year, month, rows)
 
             except Exception as e:
-                st.warning(f"KMTC 爬取 {pod} 時發生錯誤: {e}")
+                st.warning(f"KMTC scraping error for {pod}: {e}")
                 continue
 
     finally:
@@ -1007,7 +1007,7 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.common.keys import Keys
     except ImportError:
-        st.error("請安裝 selenium: pip install selenium")
+        st.error("Please install selenium: pip install selenium")
         return empty_df()
 
     pod_keyword_map = {
@@ -1060,7 +1060,7 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
                         from_input.send_keys(Keys.RETURN)
                         time.sleep(1)
                 except Exception as e:
-                    st.warning(f"YML From 欄位填寫失敗: {e}")
+                    st.warning(f"YML: Failed to fill From field: {e}")
 
                 # Fill "To" field: destination
                 try:
@@ -1078,7 +1078,7 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
                         to_input.send_keys(Keys.RETURN)
                         time.sleep(1)
                 except Exception as e:
-                    st.warning(f"YML To 欄位填寫失敗: {e}")
+                    st.warning(f"YML: Failed to fill To field: {e}")
 
                 # Set period (select the month)
                 yyyymm = f"{year:04d}/{month:02d}"
@@ -1099,7 +1099,7 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
                     search_btn.click()
                     time.sleep(4)
                 except Exception as e:
-                    st.warning(f"YML Search 按鈕點擊失敗: {e}")
+                    st.warning(f"YML: Failed to click Search button: {e}")
 
                 # Extract results
                 tables = driver.find_elements(By.TAG_NAME, "table")
@@ -1199,7 +1199,7 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
                             })
 
             except Exception as e:
-                st.warning(f"YML 爬取 {pod} 時發生錯誤: {e}")
+                st.warning(f"YML scraping error for {pod}: {e}")
                 continue
 
     finally:
@@ -1303,7 +1303,7 @@ def export_to_excel(all_data: pd.DataFrame) -> bytes:
 
 def main():
     st.set_page_config(
-        page_title="船期整理系統",
+        page_title="Shipping Schedule Organizer",
         page_icon="🚢",
         layout="wide",
         initial_sidebar_state="expanded",
@@ -1336,8 +1336,8 @@ def main():
 
     st.markdown("""
     <div class="main-header">
-      <h1>🚢 船期整理系統</h1>
-      <p>Shipping Schedule Organizer｜POL: HAIPHONG → HKG / SKU / KHH / TXG</p>
+      <h1>🚢 Shipping Schedule Organizer</h1>
+      <p>POL: HAIPHONG &rarr; HKG / SKU / KHH / TXG</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1364,18 +1364,18 @@ def main():
 
     # ── Sidebar ──────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### ⚙️ 設定")
+        st.markdown("### ⚙️ Settings")
 
         # Month & Year selector
         today = datetime.today()
         col_y, col_m = st.columns(2)
         with col_y:
-            sel_year  = st.selectbox("年份", list(range(today.year - 1, today.year + 3)),
+            sel_year  = st.selectbox("Year", list(range(today.year - 1, today.year + 3)),
                                      index=1)
         with col_m:
-            sel_month = st.selectbox("月份", list(range(1, 13)),
+            sel_month = st.selectbox("Month", list(range(1, 13)),
                                      index=today.month - 1,
-                                     format_func=lambda m: f"{m:02d}月")
+                                     format_func=lambda m: f"{m:02d}")
 
         # Date range for file upload filtering
         import calendar
@@ -1384,52 +1384,52 @@ def main():
         range_end   = datetime(sel_year, sel_month, last_day, 23, 59, 59)
 
         st.divider()
-        st.markdown("### 🎯 目的港 (POD)")
+        st.markdown("### 🎯 Destination Port (POD)")
         sel_pods = []
         for pod in POD_LIST:
             if st.checkbox(pod, value=True, key=f"pod_{pod}"):
                 sel_pods.append(pod)
 
         st.divider()
-        st.markdown("### 📊 已收集資料")
+        st.markdown("### 📊 Collected Data")
         for carrier in CARRIER_LIST:
             df = st.session_state.data_store.get(carrier, empty_df())
             cnt = len(df)
             color = "#1F4788" if cnt > 0 else "#aaa"
-            st.markdown(f"<span class='carrier-badge' style='background:{color}'>{carrier}: {cnt} 筆</span>",
+            st.markdown(f"<span class='carrier-badge' style='background:{color}'>{carrier}: {cnt} records</span>",
                         unsafe_allow_html=True)
 
         st.divider()
-        if st.button("🗑️ 清除所有資料", type="secondary", use_container_width=True):
+        if st.button("🗑️ Clear All Data", type="secondary", use_container_width=True):
             st.session_state.data_store = {c: empty_df() for c in CARRIER_LIST}
             st.rerun()
 
     # ── Main tabs ────────────────────────────────────────────────────────
     tab_upload, tab_web, tab_preview, tab_export = st.tabs([
-        "📂 上傳檔案 (CNC / TSL)",
-        "🌐 網頁爬取 (IAL / KMTC / YML)",
-        "📋 資料預覽",
-        "📥 匯出 Excel",
+        "📂 Upload Files (CNC / TSL)",
+        "🌐 Web Scraping (IAL / KMTC / YML)",
+        "📋 Data Preview",
+        "📥 Export Excel",
     ])
 
     # ── Tab 1: File Upload ───────────────────────────────────────────────
     with tab_upload:
-        st.subheader("📂 上傳船期檔案")
-        st.info(f"篩選日期範圍：**{range_start.strftime('%Y/%m/%d')}** 至 **{range_end.strftime('%Y/%m/%d')}**")
+        st.subheader("📂 Upload Schedule Files")
+        st.info(f"Filtering date range: **{range_start.strftime('%Y/%m/%d')}** to **{range_end.strftime('%Y/%m/%d')}**")
 
         col1, col2 = st.columns(2)
 
         # CNC Upload
         with col1:
             st.markdown("#### 🚢 CNC")
-            st.caption("支援格式：CSV / PDF / Excel｜檔名需含 **CNC**")
-            cnc_files = st.file_uploader("選擇 CNC 檔案", type=["csv", "pdf", "xlsx", "xls"],
+            st.caption("Supported formats: CSV / PDF / Excel｜Filename must contain **CNC**")
+            cnc_files = st.file_uploader("Select CNC files", type=["csv", "pdf", "xlsx", "xls"],
                                           accept_multiple_files=True, key="cnc_upload",
                                           label_visibility="collapsed")
             if cnc_files:
-                if st.button("解析 CNC 檔案", type="primary", key="parse_cnc"):
+                if st.button("Parse CNC Files", type="primary", key="parse_cnc"):
                     all_cnc = []
-                    with st.spinner("解析中..."):
+                    with st.spinner("Parsing..."):
                         for f in cnc_files:
                             df = parse_cnc(f.read(), f.name)
                             if not df.empty:
@@ -1439,22 +1439,22 @@ def main():
                         # Filter to selected PODs
                         merged = merged[merged["POD"].isin(sel_pods)]
                         store_data("CNC", merged)
-                        st.success(f"✅ CNC 解析完成：共 {len(merged)} 筆")
+                        st.success(f"✅ CNC parsed successfully: {len(merged)} records")
                         st.dataframe(merged, use_container_width=True)
                     else:
-                        st.warning("⚠️ 未找到符合條件的 CNC 資料")
+                        st.warning("⚠️ No matching CNC data found")
 
         # TSL Upload
         with col2:
             st.markdown("#### 🚢 TSL")
-            st.caption("支援格式：Excel / PDF｜檔名需含 **TSL**")
-            tsl_files = st.file_uploader("選擇 TSL 檔案", type=["xlsx", "xls", "pdf"],
+            st.caption("Supported formats: Excel / PDF｜Filename must contain **TSL**")
+            tsl_files = st.file_uploader("Select TSL files", type=["xlsx", "xls", "pdf"],
                                           accept_multiple_files=True, key="tsl_upload",
                                           label_visibility="collapsed")
             if tsl_files:
-                if st.button("解析 TSL 檔案", type="primary", key="parse_tsl"):
+                if st.button("Parse TSL Files", type="primary", key="parse_tsl"):
                     all_tsl = []
-                    with st.spinner("解析中..."):
+                    with st.spinner("Parsing..."):
                         for f in tsl_files:
                             df = parse_tsl(f.read(), f.name, range_start, range_end)
                             if not df.empty:
@@ -1463,18 +1463,18 @@ def main():
                         merged = pd.concat(all_tsl, ignore_index=True)
                         merged = merged[merged["POD"].isin(sel_pods)]
                         store_data("TSL", merged)
-                        st.success(f"✅ TSL 解析完成：共 {len(merged)} 筆")
+                        st.success(f"✅ TSL parsed successfully: {len(merged)} records")
                         st.dataframe(merged, use_container_width=True)
                     else:
-                        st.warning("⚠️ 未找到符合條件的 TSL 資料")
+                        st.warning("⚠️ No matching TSL data found")
 
     # ── Tab 2: Web Scraping ──────────────────────────────────────────────
     with tab_web:
-        st.subheader("🌐 網頁爬取船期")
-        st.info(f"爬取月份：**{sel_year} 年 {sel_month:02d} 月** ｜ 目的港：{', '.join(sel_pods) if sel_pods else '（未選擇）'}")
+        st.subheader("🌐 Web Scraping")
+        st.info(f"Target month: **{sel_year} / {sel_month:02d}** ｜ POD: {', '.join(sel_pods) if sel_pods else '(none selected)'}")
 
         if not sel_pods:
-            st.warning("請在側邊欄選擇至少一個目的港")
+            st.warning("Please select at least one destination port in the sidebar.")
         else:
             col_ial, col_kmtc, col_yml = st.columns(3)
 
@@ -1484,16 +1484,16 @@ def main():
                 st.caption("https://www.interasia.cc")
                 ial_cnt = len(st.session_state.data_store.get("IAL", empty_df()))
                 if ial_cnt > 0:
-                    st.success(f"已有 {ial_cnt} 筆資料")
-                if st.button("爬取 IAL", type="primary", key="scrape_ial", use_container_width=True):
-                    with st.spinner(f"爬取 IAL {sel_year}/{sel_month:02d}..."):
+                    st.success(f"{ial_cnt} records loaded")
+                if st.button("Scrape IAL", type="primary", key="scrape_ial", use_container_width=True):
+                    with st.spinner(f"Scraping IAL {sel_year}/{sel_month:02d}..."):
                         df = scrape_ial(sel_year, sel_month, sel_pods)
                     if not df.empty:
                         store_data("IAL", df)
-                        st.success(f"✅ IAL 完成：{len(df)} 筆")
+                        st.success(f"✅ IAL done: {len(df)} records")
                         st.dataframe(df, use_container_width=True)
                     else:
-                        st.warning("⚠️ 未取得 IAL 資料（請確認瀏覽器驅動已安裝）")
+                        st.warning("⚠️ No IAL data retrieved (please check browser driver installation)")
 
             # KMTC
             with col_kmtc:
@@ -1501,16 +1501,16 @@ def main():
                 st.caption("https://www.ekmtc.com")
                 kmtc_cnt = len(st.session_state.data_store.get("KMTC", empty_df()))
                 if kmtc_cnt > 0:
-                    st.success(f"已有 {kmtc_cnt} 筆資料")
-                if st.button("爬取 KMTC", type="primary", key="scrape_kmtc", use_container_width=True):
-                    with st.spinner(f"爬取 KMTC {sel_year}/{sel_month:02d}..."):
+                    st.success(f"{kmtc_cnt} records loaded")
+                if st.button("Scrape KMTC", type="primary", key="scrape_kmtc", use_container_width=True):
+                    with st.spinner(f"Scraping KMTC {sel_year}/{sel_month:02d}..."):
                         df = scrape_kmtc(sel_year, sel_month, sel_pods)
                     if not df.empty:
                         store_data("KMTC", df)
-                        st.success(f"✅ KMTC 完成：{len(df)} 筆")
+                        st.success(f"✅ KMTC done: {len(df)} records")
                         st.dataframe(df, use_container_width=True)
                     else:
-                        st.warning("⚠️ 未取得 KMTC 資料（請確認瀏覽器驅動已安裝）")
+                        st.warning("⚠️ No KMTC data retrieved (please check browser driver installation)")
 
             # YML
             with col_yml:
@@ -1518,46 +1518,46 @@ def main():
                 st.caption("https://www.yangming.com")
                 yml_cnt = len(st.session_state.data_store.get("YML", empty_df()))
                 if yml_cnt > 0:
-                    st.success(f"已有 {yml_cnt} 筆資料")
-                if st.button("爬取 YML", type="primary", key="scrape_yml", use_container_width=True):
-                    with st.spinner(f"爬取 YML {sel_year}/{sel_month:02d}..."):
+                    st.success(f"{yml_cnt} records loaded")
+                if st.button("Scrape YML", type="primary", key="scrape_yml", use_container_width=True):
+                    with st.spinner(f"Scraping YML {sel_year}/{sel_month:02d}..."):
                         df = scrape_yml(sel_year, sel_month, sel_pods)
                     if not df.empty:
                         store_data("YML", df)
-                        st.success(f"✅ YML 完成：{len(df)} 筆")
+                        st.success(f"✅ YML done: {len(df)} records")
                         st.dataframe(df, use_container_width=True)
                     else:
-                        st.warning("⚠️ 未取得 YML 資料（請確認瀏覽器驅動已安裝）")
+                        st.warning("⚠️ No YML data retrieved (please check browser driver installation)")
 
             st.divider()
-            st.markdown("#### 一鍵爬取全部")
-            if st.button("🚀 爬取 IAL + KMTC + YML", type="primary", use_container_width=True):
+            st.markdown("#### Scrape All at Once")
+            if st.button("🚀 Scrape IAL + KMTC + YML", type="primary", use_container_width=True):
                 carriers_web = [("IAL", scrape_ial), ("KMTC", scrape_kmtc), ("YML", scrape_yml)]
                 for carrier_name, scrape_fn in carriers_web:
-                    with st.spinner(f"爬取 {carrier_name}..."):
+                    with st.spinner(f"Scraping {carrier_name}..."):
                         df = scrape_fn(sel_year, sel_month, sel_pods)
                     if not df.empty:
                         store_data(carrier_name, df)
-                        st.success(f"✅ {carrier_name}: {len(df)} 筆")
+                        st.success(f"✅ {carrier_name}: {len(df)} records")
                     else:
-                        st.warning(f"⚠️ {carrier_name}: 無資料")
+                        st.warning(f"⚠️ {carrier_name}: No data")
 
     # ── Tab 3: Data Preview ──────────────────────────────────────────────
     with tab_preview:
-        st.subheader("📋 資料預覽")
+        st.subheader("📋 Data Preview")
         all_data = get_all_data()
 
         if all_data.empty:
-            st.info("尚無資料。請先上傳檔案或爬取網頁船期。")
+            st.info("No data yet. Please upload files or scrape web schedules first.")
         else:
             # Summary stats
-            st.markdown("##### 📊 彙整統計")
+            st.markdown("##### 📊 Summary")
             stat_cols = st.columns(len(POD_LIST) + 1)
             with stat_cols[0]:
                 st.markdown(f"""
                 <div class="stat-box">
                   <div class="stat-num">{len(all_data)}</div>
-                  <div class="stat-lbl">總筆數</div>
+                  <div class="stat-lbl">Total Records</div>
                 </div>""", unsafe_allow_html=True)
             for i, pod in enumerate(POD_LIST, 1):
                 cnt = len(all_data[all_data["POD"] == pod])
@@ -1571,21 +1571,21 @@ def main():
             st.divider()
 
             # Preview by POD
-            view_mode = st.radio("檢視方式", ["依 POD 分頁", "全部合併"], horizontal=True)
+            view_mode = st.radio("View mode", ["By POD", "All combined"], horizontal=True)
 
-            if view_mode == "依 POD 分頁":
+            if view_mode == "By POD":
                 pod_tabs = st.tabs([p.title() for p in POD_LIST])
                 for i, pod in enumerate(POD_LIST):
                     with pod_tabs[i]:
                         pod_df = all_data[all_data["POD"] == pod].copy()
                         if pod_df.empty:
-                            st.info(f"無 {pod} 資料")
+                            st.info(f"No data for {pod}")
                         else:
                             pod_df["_sort"] = pd.to_datetime(pod_df["ETD"], format="%Y/%m/%d", errors="coerce")
                             pod_df = pod_df.sort_values("_sort").drop(columns=["_sort"])
                             display_cols = ["Carrier"] + OUTPUT_COLS if "Carrier" in pod_df.columns else OUTPUT_COLS
                             st.dataframe(pod_df[display_cols], use_container_width=True, height=400)
-                            st.caption(f"共 {len(pod_df)} 筆")
+                            st.caption(f"{len(pod_df)} records")
             else:
                 all_data["_sort"] = pd.to_datetime(all_data["ETD"], format="%Y/%m/%d", errors="coerce")
                 all_data = all_data.sort_values(["POD", "_sort"]).drop(columns=["_sort"])
@@ -1594,26 +1594,26 @@ def main():
 
     # ── Tab 4: Export ────────────────────────────────────────────────────
     with tab_export:
-        st.subheader("📥 匯出 Excel")
+        st.subheader("📥 Export Excel")
         all_data = get_all_data()
 
         if all_data.empty:
-            st.warning("⚠️ 尚無資料可匯出，請先收集船期資料。")
+            st.warning("⚠️ No data to export. Please collect schedule data first.")
         else:
             st.markdown(f"""
-            **匯出摘要：**
-            - 總筆數：**{len(all_data)}** 筆
-            - 船公司：{', '.join(sorted(all_data['Carrier'].unique()) if 'Carrier' in all_data.columns else [])}
-            - 目的港 Sheets：{', '.join([p for p in POD_LIST if p in all_data['POD'].values])}
+            **Export Summary:**
+            - Total records: **{len(all_data)}**
+            - Carriers: {', '.join(sorted(all_data['Carrier'].unique()) if 'Carrier' in all_data.columns else [])}
+            - POD Sheets: {', '.join([p for p in POD_LIST if p in all_data['POD'].values])}
             """)
 
-            filename = f"船期整理_{sel_year}{sel_month:02d}.xlsx"
-            if st.button("🔄 生成 Excel 報表", type="primary"):
-                with st.spinner("生成中..."):
+            filename = f"ShippingSchedule_{sel_year}{sel_month:02d}.xlsx"
+            if st.button("🔄 Generate Excel Report", type="primary"):
+                with st.spinner("Generating..."):
                     excel_bytes = export_to_excel(all_data)
-                st.success("✅ Excel 報表生成完畢！")
+                st.success("✅ Excel report ready!")
                 st.download_button(
-                    label=f"⬇️ 下載 {filename}",
+                    label=f"⬇️ Download {filename}",
                     data=excel_bytes,
                     file_name=filename,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1622,11 +1622,11 @@ def main():
                 )
 
             st.divider()
-            st.markdown("#### 📑 預覽各 Sheet")
+            st.markdown("#### Sheet Preview")
             for pod in POD_LIST:
                 pod_df = all_data[all_data["POD"] == pod]
                 if not pod_df.empty:
-                    with st.expander(f"📄 {pod.title()} ({len(pod_df)} 筆)"):
+                    with st.expander(f"📄 {pod.title()} ({len(pod_df)} records)"):
                         pod_df2 = pod_df.copy()
                         pod_df2["_s"] = pd.to_datetime(pod_df2["ETD"], format="%Y/%m/%d", errors="coerce")
                         pod_df2 = pod_df2.sort_values("_s").drop(columns=["_s"])
