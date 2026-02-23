@@ -570,7 +570,14 @@ def parse_tsl(file_bytes: bytes, filename: str,
 # ─────────────────────────────────────────────
 
 def get_driver():
-    """Create a Selenium headless Chrome driver."""
+    """
+    Create Selenium headless Chrome with anti-bot detection flags.
+    Key additions vs old version:
+    - disable-blink-features=AutomationControlled  (hides navigator.webdriver)
+    - excludeSwitches: enable-automation
+    - useAutomationExtension: false
+    - Realistic user-agent string
+    """
     try:
         from selenium import webdriver
         from selenium.webdriver.chrome.options import Options
@@ -582,8 +589,22 @@ def get_driver():
         options.add_argument("--disable-dev-shm-usage")
         options.add_argument("--disable-gpu")
         options.add_argument("--window-size=1920,1080")
-        options.add_argument("--lang=zh-TW")
-        options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36")
+        options.add_argument("--lang=zh-TW,zh;q=0.9,en;q=0.8")
+        options.add_argument("--disable-blink-features=AutomationControlled")
+        options.add_argument("--disable-extensions")
+        options.add_argument("--disable-infobars")
+        options.add_argument("--start-maximized")
+        options.add_argument("--ignore-certificate-errors")
+        options.add_argument("--allow-running-insecure-content")
+        # Realistic modern Chrome UA
+        options.add_argument(
+            "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/131.0.0.0 Safari/537.36"
+        )
+        # Hide automation markers
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
 
         # Try system chromium first (Streamlit Cloud)
         for binary in ["/usr/bin/chromium", "/usr/bin/chromium-browser",
@@ -592,26 +613,62 @@ def get_driver():
                 options.binary_location = binary
                 break
 
+        driver = None
         for driver_path in ["/usr/bin/chromedriver", "/usr/lib/chromium/chromedriver",
                             "/usr/lib/chromium-browser/chromedriver"]:
             if os.path.exists(driver_path):
                 service = Service(driver_path)
-                return webdriver.Chrome(service=service, options=options)
+                driver = webdriver.Chrome(service=service, options=options)
+                break
 
-        # Fallback: webdriver_manager
-        try:
-            from webdriver_manager.chrome import ChromeDriverManager
-            service = Service(ChromeDriverManager().install())
-            return webdriver.Chrome(service=service, options=options)
-        except Exception:
-            pass
+        if driver is None:
+            try:
+                from webdriver_manager.chrome import ChromeDriverManager
+                service = Service(ChromeDriverManager().install())
+                driver = webdriver.Chrome(service=service, options=options)
+            except Exception:
+                driver = webdriver.Chrome(options=options)
 
-        # Last resort: no service arg
-        return webdriver.Chrome(options=options)
+        if driver:
+            # Patch navigator.webdriver to undefined via CDP
+            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                "source": """
+                    Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['zh-TW','zh','en']});
+                    window.chrome = {runtime: {}};
+                """
+            })
+        return driver
 
     except Exception as e:
-        st.error(f"Failed to start browser driver: {e}\nPlease ensure chromium and chromedriver are installed.")
+        st.error(f"Failed to start browser driver: {type(e).__name__}: {e}")
         return None
+
+
+def _debug_screenshot(driver, label: str = "page"):
+    """Capture a screenshot and page title for debugging, display in Streamlit."""
+    if not st.session_state.get("_debug_mode", False):
+        return
+    try:
+        import base64, io
+        title = driver.title or "(no title)"
+        url   = driver.current_url or ""
+        png   = driver.get_screenshot_as_png()
+        b64   = base64.b64encode(png).decode()
+        st.markdown(f"**🔍 Debug [{label}]** — Title: `{title}` | URL: `{url[:80]}...`")
+        st.markdown(
+            f'<img src="data:image/png;base64,{b64}" style="max-width:100%;border:1px solid #444;border-radius:4px"/>',
+            unsafe_allow_html=True
+        )
+        # Also show first 500 chars of page text
+        try:
+            body_text = driver.find_element(__import__("selenium").webdriver.common.by.By.TAG_NAME, "body").text[:600]
+            st.code(body_text, language=None)
+        except Exception:
+            pass
+    except Exception as ex:
+        st.warning(f"Screenshot failed: {ex}")
 
 
 def _js_click(driver, element):
@@ -716,12 +773,22 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
                 time.sleep(2)
                 _dismiss_overlays(driver)
 
-                wait.until(EC.presence_of_all_elements_located((By.TAG_NAME, "select")))
+                # Wait for page to load (avoid TimeoutException from wait.until)
+                time.sleep(3)
+                # Try scrolling to trigger lazy-load
+                driver.execute_script("window.scrollTo(0, 300);")
                 time.sleep(1)
 
                 selects = driver.find_elements(By.TAG_NAME, "select")
                 if len(selects) < 2:
-                    st.warning(f"IAL: Found only {len(selects)} select elements on page")
+                    # Try waiting a bit more
+                    time.sleep(3)
+                    selects = driver.find_elements(By.TAG_NAME, "select")
+                if len(selects) < 2:
+                    page_title = driver.title
+                    st.warning(f"IAL: Found only {len(selects)} select elements. Page title: '{page_title}'")
+                    if "debug_mode" in dir() and debug_mode:
+                        _debug_screenshot(driver, f"IAL-{pod}-no-selects")
                     continue
 
                 # [0] Origin country = VIETNAM
@@ -849,7 +916,11 @@ def scrape_ial(year: int, month: int, pods: list) -> pd.DataFrame:
                         })
 
             except Exception as e:
-                st.warning(f"IAL scraping error for {pod}: {e}")
+                st.warning(f"IAL scraping error for {pod}: {type(e).__name__}: {e}")
+                try:
+                    _debug_screenshot(driver, f"IAL-{pod}-exception")
+                except Exception:
+                    pass
                 continue
 
     finally:
@@ -955,7 +1026,11 @@ def scrape_kmtc(year: int, month: int, pods: list) -> pd.DataFrame:
                         continue
 
             except Exception as e:
-                st.warning(f"KMTC scraping error for {pod}: {e}")
+                st.warning(f"KMTC scraping error for {pod}: {type(e).__name__}: {e}")
+                try:
+                    _debug_screenshot(driver, f"KMTC-{pod}-exception")
+                except Exception:
+                    pass
                 continue
 
     finally:
@@ -1390,7 +1465,11 @@ def scrape_yml(year: int, month: int, pods: list) -> pd.DataFrame:
                         _parse_yml_card(card.text, pod, year, month, rows)
 
             except Exception as e:
-                st.warning(f"YML scraping error for {pod}: {e}")
+                st.warning(f"YML scraping error for {pod}: {type(e).__name__}: {e}")
+                try:
+                    _debug_screenshot(driver, f"YML-{pod}-exception")
+                except Exception:
+                    pass
                 continue
 
     finally:
@@ -1742,6 +1821,12 @@ def main():
     with tab_web:
         st.subheader("🌐 Web Scraping")
         st.info(f"Target month: **{sel_year} / {sel_month:02d}** ｜ POD: {', '.join(sel_pods) if sel_pods else '(none selected)'}")
+
+        # Debug mode toggle
+        debug_mode = st.toggle("🔍 Debug Mode (show page screenshots on error)", value=False)
+        st.session_state["_debug_mode"] = debug_mode
+        if debug_mode:
+            st.caption("Debug mode ON: Browser screenshots will be captured and shown when errors occur.")
 
         if not sel_pods:
             st.warning("Please select at least one destination port in the sidebar.")
